@@ -1,0 +1,29 @@
+Aus deiner Beschreibung geht hervor, dass die durch eine GPO ausgerollten Trusted Root Certificates dazu führen, dass dein MECM (Microsoft Endpoint Configuration Manager) nicht mehr erfolgreich mit der hinterlegten PKI kommunizieren kann, bis du das CA-Zertifikat wieder manuell in den NTAuth-Store hinzufügst. Nach der erneuten Aktualisierung der Trusted Root Certificates tritt dann dasselbe Problem erneut auf.
+
+**Mögliche Ursachen & Lösungsansätze:**
+
+1. **Unterschied zwischen Trusted Roots und NTAuth-Store:**  
+   Der NTAuth-Store ist ein spezieller Container in Active Directory, in dem Zertifikate von CAs gespeichert werden, denen für bestimmte Authentifizierungsprozesse auf Domänenebene vertraut wird. Das bloße Verteilen des Root-CA-Zertifikats per GPO in den Trusted Root Certificate Store des Computers reicht für bestimmte PKI-basierte Funktionen nicht aus. Insbesondere für Smartcard-Logons oder SCCM/MECM-bezogene PKI-Authentifizierung muss das CA-Zertifikat auch im NTAuth-Store hinterlegt sein.
+
+2. **GPO vs. AD-Container (NTAuth) Publizierung:**  
+   Wenn du das Root-Zertifikat nur per GPO in den "Trusted Root"-Speicher verteilst, kann es sein, dass dieses Zertifikat nicht dauerhaft im NTAuth-Store verbleibt, sobald eine GPO-Aktualisierung durchgeführt wird. Der NTAuth-Store wird aus dem Active Directory Container `CN=NTAuthCertificates,CN=Public Key Services,CN=Services,CN=Configuration,<ForestDN>` gespeist.  
+   
+   Mit dem reinen `certutil -enterprise -addstore NTAuth CA_CertFilename.cer` schreibst du das Zertifikat nur lokal ins NTAuth-Zertifikatsspeicher, nicht aber in den AD-Container. Bei der nächsten GPO-Aktualisierung kann dieses lokale Setting überschrieben oder nicht mehr berücksichtigt werden.
+
+3. **Zertifikate korrekt im AD publizieren:**  
+   Verwende stattdessen den folgenden Befehl:
+   ```
+   certutil -dspublish -f CA_CertFilename.cer NTAuthCA
+   ```
+   Dieser Befehl publiziert das Zertifikat direkt in den entsprechenden AD-Container. Sobald das Zertifikat im AD-Container hinterlegt ist und die Änderungen durch die AD-Replikation verteilt wurden, sollten alle Domänen-Mitglieder (inkl. deiner Server und MECM-Instanzen) dieses Zertifikat im NTAuth-Store vorfinden. Dadurch bleibt das Zertifikat nach GPO-Updates oder anderen Änderungen bestehen.
+
+4. **Überprüfung mittels ADSIEdit und AD-Replication:**
+   Nach dem Publizieren mit `certutil -dspublish` kannst du mit ADSIEdit oder mit `certutil -viewstore -enterprise NTAuth` überprüfen, ob das Zertifikat korrekt im AD hinterlegt ist. Stelle sicher, dass die AD-Replikation abgeschlossen ist, bevor du erneut testest.  
+   
+   Auch kann es hilfreich sein, den MECM-Server neu zu starten oder den SMS Executive Service neu anzustoßen, nachdem die Zertifikate im AD-NTAuth-Container gelandet sind, um sicherzustellen, dass MECM nun die korrekten Vertrauensstellungen "sieht".
+
+**Fazit:**  
+Damit dein MECM nachhaltig mit der PKI funktioniert und nach GPO-Updates nicht erneut ausfällt, musst du das benötigte Root-Zertifikat mittels `certutil -dspublish ... NTAuthCA` in den AD-NTAuth-Container veröffentlichen. Ein rein lokaler Import per `-addstore` wird bei jeder GPO-Aktualisierung potenziell überschrieben oder ignoriert, da die langfristige authoritative Quelle für NTAuth das Active Directory ist.
+
+
+Quellen: https://learn.microsoft.com/de-de/troubleshoot/windows-server/certificates-and-public-key-infrastructure-pki/import-third-party-ca-to-enterprise-ntauth-store
